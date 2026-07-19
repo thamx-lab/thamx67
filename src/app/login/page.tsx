@@ -2,11 +2,11 @@ import { headers } from 'next/headers'
 import { redirect } from 'next/navigation'
 import { createClient } from '@/utils/supabase/server'
 
-export default function Login({
-  searchParams,
-}: {
-  searchParams: { message: string }
+export default async function Login(props: {
+  searchParams: Promise<{ message?: string }>
 }) {
+  const searchParams = await props.searchParams;
+
   const signIn = async (formData: FormData) => {
     'use server'
 
