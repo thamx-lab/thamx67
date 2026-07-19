@@ -6,7 +6,11 @@ const defaultPresets = {
 };
 
 export async function GET() {
-  return NextResponse.json(defaultPresets);
+  try {
+    return NextResponse.json(defaultPresets);
+  } catch (error) {
+    return NextResponse.json({ success: false, error: 'Internal Server Error' }, { status: 500 });
+  }
 }
 
 export async function POST(request: Request) {
