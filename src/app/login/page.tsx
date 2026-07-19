@@ -63,7 +63,7 @@ export default async function Login(props: {
             type="email"
             placeholder="you@example.com"
             required
-            autoComplete="email"
+            autoComplete="username"
             style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid var(--border)' }}
           />
         </div>
