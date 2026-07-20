@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { runProcessor, ProcessingJob, ProcessingResult } from '@/lib/pdfProcessor';
+import { runProcessor, autoDetectLabelSettings, ProcessingJob, ProcessingResult } from '@/lib/pdfProcessor';
 import AuthButton from './AuthButton';
 
 export default function Dashboard() {
@@ -56,6 +56,17 @@ export default function Dashboard() {
       });
       return list;
     });
+
+    // Auto-detect dimensions from first uploaded file
+    if (newFiles.length > 0) {
+      const detected = autoDetectLabelSettings(newFiles[0].name);
+      setPreset(detected.platform);
+      setCropX(detected.settings.x0);
+      setCropY(detected.settings.y0);
+      setCropW(detected.settings.w);
+      setCropH(detected.settings.h);
+      setScale(detected.settings.scale);
+    }
   };
 
   const removeFile = (index: number) => {
@@ -69,11 +80,14 @@ export default function Dashboard() {
     setResults([]);
     setProgress(0);
 
-    const jobs: ProcessingJob[] = files.map(f => ({
-      file: f,
-      platform: preset,
-      settings: { x0: cropX, y0: cropY, w: cropW, h: cropH, scale }
-    }));
+    const jobs: ProcessingJob[] = files.map(f => {
+      const detected = autoDetectLabelSettings(f.name);
+      return {
+        file: f,
+        platform: preset === 'custom' ? 'custom' : detected.platform,
+        settings: { x0: cropX, y0: cropY, w: cropW, h: cropH, scale }
+      };
+    });
 
     const handleLog = (msg: string, type: 'info' | 'ok' | 'err') => {
       setLogs(prev => [...prev, { msg: `${new Date().toLocaleTimeString()} ${msg}`, type }]);
@@ -132,7 +146,7 @@ export default function Dashboard() {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', overflowX: 'auto' }}>
           <div style={{ textAlign: 'center', minWidth: '80px' }}><div style={{ fontSize: '20px' }}>📤</div><div style={{ fontSize: '10px', color: '#94a3b8' }}>Upload PDFs</div></div>
           <div style={{ color: '#475569' }}>➔</div>
-          <div style={{ textAlign: 'center', minWidth: '80px' }}><div style={{ fontSize: '20px' }}>✂️</div><div style={{ fontSize: '10px', color: '#94a3b8' }}>Crop Invoice</div></div>
+          <div style={{ textAlign: 'center', minWidth: '80px' }}><div style={{ fontSize: '20px' }}>✂️</div><div style={{ fontSize: '10px', color: '#94a3b8' }}>Auto-Detect Dimensions</div></div>
           <div style={{ color: '#475569' }}>➔</div>
           <div style={{ textAlign: 'center', minWidth: '80px' }}><div style={{ fontSize: '20px' }}>🏷️</div><div style={{ fontSize: '10px', color: '#94a3b8' }}>Read SKU</div></div>
           <div style={{ color: '#475569' }}>➔</div>
@@ -171,7 +185,7 @@ export default function Dashboard() {
             />
             <div style={{ fontSize: '32px' }}>📁</div>
             <div style={{ fontSize: '14px', fontWeight: 700, marginTop: '8px' }}>Drop PDF shipping labels here</div>
-            <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '4px' }}>or click to browse from computer</div>
+            <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '4px' }}>Width &amp; height auto-detect on upload</div>
           </div>
 
           {files.length > 0 && (
@@ -188,7 +202,7 @@ export default function Dashboard() {
 
         {/* Crop Settings Card */}
         <div style={{ background: '#1e293b', border: '1px solid #334155', borderRadius: '12px', padding: '20px' }}>
-          <h2 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '12px' }}>✂️ Crop &amp; Quality Settings</h2>
+          <h2 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '12px' }}>✂️ Auto-Detected Dimensions</h2>
           
           <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', flexWrap: 'wrap' }}>
             {(['meesho', 'flipkart', 'amazon', 'halfa4', 'custom'] as const).map(p => (

@@ -28,6 +28,54 @@ export interface ProcessingResult {
   label: string;
 }
 
+// Automatic Label Platform & Dimension Detector
+export function autoDetectLabelSettings(fileName: string, textContent?: string): { platform: 'meesho' | 'flipkart' | 'amazon' | 'halfa4' | 'custom'; settings: CropSettings } {
+  const lowerName = fileName.toLowerCase();
+  const lowerText = (textContent || '').toLowerCase();
+
+  // Flipkart / Shopsy / Ekart Detection (Standard Flipkart A4: 595pt x 350pt)
+  if (
+    lowerName.includes('flipkart') ||
+    lowerName.includes('shopsy') ||
+    lowerName.includes('ekart') ||
+    lowerText.includes('flipkart') ||
+    lowerText.includes('ekart') ||
+    lowerText.includes('sku id')
+  ) {
+    return {
+      platform: 'flipkart',
+      settings: { x0: 0, y0: 0, w: 595, h: 350, scale: 2 }
+    };
+  }
+
+  // Amazon / ATS Detection (Standard Amazon: 595pt x 300pt)
+  if (
+    lowerName.includes('amazon') ||
+    lowerName.includes('ats') ||
+    lowerText.includes('amazon') ||
+    lowerText.includes('shipment value')
+  ) {
+    return {
+      platform: 'amazon',
+      settings: { x0: 0, y0: 0, w: 595, h: 300, scale: 2 }
+    };
+  }
+
+  // Half A4 Detection (595pt x 420pt)
+  if (lowerName.includes('half') || lowerName.includes('420')) {
+    return {
+      platform: 'halfa4',
+      settings: { x0: 0, y0: 0, w: 595, h: 420, scale: 2 }
+    };
+  }
+
+  // Common Meesho A4 Label (Standard Meesho: 595pt x 350pt)
+  return {
+    platform: 'meesho',
+    settings: { x0: 0, y0: 0, w: 595, h: 350, scale: 2 }
+  };
+}
+
 function extractProductDetails(textItems: any[]) {
   const words = textItems
     .filter((item: any) => item.str && item.str.trim())
@@ -201,8 +249,12 @@ export async function runProcessor(
 
   for (const job of jobs) {
     try {
+      // Auto-resolve dimensions if not specified or matching preset
+      const detected = autoDetectLabelSettings(job.file.name);
+      const effectiveSettings = job.settings.w > 0 && job.settings.h > 0 ? job.settings : detected.settings;
+
       const { pages, sortedSKUKeys } = await processFile(job, onLog);
-      const doc = await buildPDF(pages, job.settings);
+      const doc = await buildPDF(pages, effectiveSettings);
 
       if (!doc) throw new Error('PDF generation failed');
 
@@ -214,8 +266,8 @@ export async function runProcessor(
         url,
         pages: pages.length,
         skus: sortedSKUKeys,
-        badge: job.platform === 'meesho' ? 'badge-m' : 'badge-f',
-        label: job.platform.toUpperCase()
+        badge: detected.platform === 'meesho' ? 'badge-m' : 'badge-f',
+        label: detected.platform.toUpperCase()
       });
 
       done++;
