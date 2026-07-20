@@ -1,8 +1,8 @@
 import * as pdfjsLib from 'pdfjs-dist';
-import { jsPDF } from 'jspdf';
 
-// Initialize PDF.js worker
-pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+if (typeof window !== 'undefined') {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js`;
+}
 
 export interface CropSettings {
   x0: number;
@@ -14,8 +14,8 @@ export interface CropSettings {
 
 export interface ProcessingJob {
   file: File;
-  platform: 'meesho' | 'flipkart';
-  skuPattern: string;
+  platform: 'meesho' | 'flipkart' | 'amazon' | 'halfa4' | 'custom';
+  skuPattern?: string;
   settings: CropSettings;
 }
 
@@ -28,20 +28,52 @@ export interface ProcessingResult {
   label: string;
 }
 
-async function extractTextFromPage(page: pdfjsLib.PDFPageProxy): Promise<string> {
-  const tc = await page.getTextContent();
-  return tc.items.map((i: any) => i.str).join(' ');
-}
+function extractProductDetails(textItems: any[]) {
+  const words = textItems
+    .filter((item: any) => item.str && item.str.trim())
+    .map((item: any) => ({
+      text: item.str.trim(),
+      x: item.transform ? item.transform[4] : 0,
+      y: item.transform ? Math.round(item.transform[5]) : 0
+    }));
 
-function extractSKU(text: string, pattern: string): string | null {
-  try {
-    const rx = new RegExp(pattern, 'i');
-    const m = rx.exec(text);
-    if (!m) return null;
-    return (m[1] || m[2] || m[0]).trim();
-  } catch {
-    return null;
+  let skuHeaderY: number | null = null;
+  for (const w of words) {
+    if (w.text.toUpperCase() === 'SKU' && w.x < 120) {
+      skuHeaderY = w.y;
+      break;
+    }
   }
+
+  if (skuHeaderY !== null) {
+    const valueLineY = skuHeaderY - 16;
+    const tolerance = 10;
+    const valueLine = words
+      .filter(w => Math.abs(w.y - valueLineY) <= tolerance)
+      .sort((a, b) => a.x - b.x);
+
+    const skuTokens = valueLine.filter(w => w.x < 200);
+    const sku = skuTokens.length
+      ? skuTokens.map(w => w.text).join(' ').replace(/\s{2,}/g, ' ').trim().toUpperCase()
+      : null;
+
+    const sizeTokens = valueLine.filter(w => w.x >= 200 && w.x < 295);
+    const size = sizeTokens.length
+      ? sizeTokens.map(w => w.text).join(' ').replace(/\s{2,}/g, ' ').trim()
+      : '';
+
+    if (sku) return { sku, size };
+  }
+
+  const fullText = words.map(w => w.text).join(' ');
+  const skuMatch = fullText.match(/SKU\s*:\s*([A-Z0-9_\-\/]+)/i) || 
+                   fullText.match(/Product\s*SKU\s*:\s*([A-Z0-9_\-\/]+)/i);
+
+  if (skuMatch && skuMatch[1]) {
+    return { sku: skuMatch[1].toUpperCase(), size: '' };
+  }
+
+  return { sku: null, size: null };
 }
 
 async function renderCroppedPage(
@@ -51,81 +83,109 @@ async function renderCroppedPage(
   cropY: number,
   cropW: number,
   cropH: number
-): Promise<{ canvas: HTMLCanvasElement; width: number; height: number }> {
-  const vp = pdfPage.getViewport({ scale });
-
+): Promise<HTMLCanvasElement> {
+  const viewport = pdfPage.getViewport({ scale });
   const fullCanvas = document.createElement('canvas');
-  fullCanvas.width = Math.round(vp.width);
-  fullCanvas.height = Math.round(vp.height);
-  const fullCtx = fullCanvas.getContext('2d');
-  if (!fullCtx) throw new Error('Could not get 2d context');
+  fullCanvas.width = Math.round(viewport.width);
+  fullCanvas.height = Math.round(viewport.height);
+  const ctx = fullCanvas.getContext('2d');
+  if (!ctx) throw new Error('Could not get 2D canvas context');
 
-  await pdfPage.render({ canvasContext: fullCtx, viewport: vp, canvas: fullCanvas }).promise;
+  await pdfPage.render({ canvasContext: ctx, viewport, canvas: fullCanvas } as any).promise;
 
-  const sx = Math.round(cropX * scale);
-  const sy = Math.round(cropY * scale);
-  const sw = Math.round(cropW * scale);
-  const sh = Math.round(cropH * scale);
+  const sx = Math.max(0, Math.round(cropX * scale));
+  const sy = Math.max(0, Math.round(cropY * scale));
+  const sw = Math.min(Math.round(cropW * scale), fullCanvas.width - sx);
+  const sh = Math.min(Math.round(cropH * scale), fullCanvas.height - sy);
 
-  const outCanvas = document.createElement('canvas');
-  outCanvas.width = sw;
-  outCanvas.height = sh;
-  const outCtx = outCanvas.getContext('2d');
-  if (!outCtx) throw new Error('Could not get 2d context for output');
+  const croppedCanvas = document.createElement('canvas');
+  croppedCanvas.width = sw;
+  croppedCanvas.height = sh;
+  const croppedCtx = croppedCanvas.getContext('2d');
+  if (!croppedCtx) throw new Error('Could not get cropped canvas context');
+  croppedCtx.drawImage(fullCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
 
-  outCtx.drawImage(fullCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
+  fullCanvas.width = 0;
+  fullCanvas.height = 0;
 
-  return { canvas: outCanvas, width: sw, height: sh };
+  return croppedCanvas;
 }
 
-async function processFile(job: ProcessingJob, onLog: (msg: string, type: 'info' | 'ok' | 'err') => void) {
-  onLog(`Loading ${job.file.name}...`, 'info');
+async function processFile(
+  job: ProcessingJob,
+  onLog: (msg: string, type: 'info' | 'ok' | 'err') => void
+) {
+  onLog(`Reading ${job.file.name}...`, 'info');
   const ab = await job.file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: ab }).promise;
-  const pages = [];
-  
-  for (let i = 1; i <= pdf.numPages; i++) {
+  const totalPages = pdf.numPages;
+
+  const rawPages: any[] = [];
+
+  for (let i = 1; i <= totalPages; i++) {
     const page = await pdf.getPage(i);
-    const text = await extractTextFromPage(page);
-    const sku = extractSKU(text, job.skuPattern);
-    pages.push({ page, text, sku, pageNum: i });
+    const tc = await page.getTextContent();
+    const { sku, size } = extractProductDetails(tc.items);
+    rawPages.push({ page, sku, size, pageNum: i });
   }
 
-  pages.sort((a, b) => {
-    if (a.sku && b.sku) return a.sku.localeCompare(b.sku, undefined, { numeric: true });
-    if (a.sku) return -1;
-    if (b.sku) return 1;
-    return a.pageNum - b.pageNum;
-  });
+  const groups = new Map<string, any[]>();
+  const noSKUPages: any[] = [];
 
-  onLog(`  ${job.file.name}: ${pdf.numPages} pages, sorted by SKU`, 'ok');
-  return pages;
+  for (const pageObj of rawPages) {
+    if (pageObj.sku) {
+      if (!groups.has(pageObj.sku)) groups.set(pageObj.sku, []);
+      groups.get(pageObj.sku)!.push(pageObj);
+    } else {
+      noSKUPages.push(pageObj);
+    }
+  }
+
+  const sortedSKUKeys = [...groups.keys()].sort((a, b) => a.localeCompare(b));
+
+  for (const key of sortedSKUKeys) {
+    groups.get(key)!.sort((a, b) => (a.size || '').localeCompare(b.size || ''));
+  }
+
+  const sortedPages: any[] = [];
+  for (const key of sortedSKUKeys) {
+    sortedPages.push(...groups.get(key)!);
+  }
+  sortedPages.push(...noSKUPages);
+
+  onLog(`  ✓ ${job.file.name}: ${totalPages} pages grouped into ${sortedSKUKeys.length} SKU(s) & sorted A–Z`, 'ok');
+  return { pages: sortedPages, sortedSKUKeys, groups };
 }
 
 async function buildPDF(pages: any[], settings: CropSettings) {
-  let doc: jsPDF | null = null;
+  const { jsPDF } = await import('jspdf');
   const { x0, y0, w, h, scale } = settings;
 
+  let doc: InstanceType<typeof jsPDF> | null = null;
+  const wPt = w;
+  const hPt = h;
+  const orientation = wPt > hPt ? 'l' : 'p';
+
   for (let i = 0; i < pages.length; i++) {
-    const { canvas, width, height } = await renderCroppedPage(
-      pages[i].page, scale, x0, y0, w, h
-    );
-    const imgData = canvas.toDataURL('image/jpeg', 0.93);
-    const wPt = w;
-    const hPt = h;
+    const canvas = await renderCroppedPage(pages[i].page, scale, x0, y0, w, h);
+    const imgData = canvas.toDataURL('image/jpeg', 0.92);
 
     if (!doc) {
-      doc = new jsPDF({ orientation: wPt > hPt ? 'l' : 'p', unit: 'pt', format: [wPt, hPt] });
+      doc = new jsPDF({ orientation, unit: 'pt', format: [wPt, hPt] });
     } else {
-      doc.addPage([wPt, hPt], wPt > hPt ? 'l' : 'p');
+      doc.addPage([wPt, hPt], orientation);
     }
 
     doc.addImage(imgData, 'JPEG', 0, 0, wPt, hPt);
-    const sku = pages[i].sku || 'NO_SKU';
-    doc.setFontSize(5);
-    doc.setTextColor(140);
-    doc.text(`P${i + 1} | ${sku}`, 3, hPt - 3);
+
+    doc.setFontSize(8);
+    doc.setTextColor(150);
+    doc.text(`${i + 1}`, wPt - 12, hPt - 6, { align: 'right' });
+
+    canvas.width = 0;
+    canvas.height = 0;
   }
+
   return doc;
 }
 
@@ -141,31 +201,28 @@ export async function runProcessor(
 
   for (const job of jobs) {
     try {
-      const pages = await processFile(job, onLog);
+      const { pages, sortedSKUKeys } = await processFile(job, onLog);
       const doc = await buildPDF(pages, job.settings);
-      
-      if (!doc) throw new Error("Document generation failed");
+
+      if (!doc) throw new Error('PDF generation failed');
 
       const blob = doc.output('blob');
       const url = URL.createObjectURL(blob);
-      const badge = job.platform === 'meesho' ? 'badge-m' : 'badge-f';
-      const label = job.platform === 'meesho' ? 'Meesho' : 'Flipkart';
-      const skus = [...new Set(pages.map(p => p.sku).filter(Boolean))] as string[];
 
       outputs.push({
-        name: job.file.name.replace(/\.pdf$/i, '') + '_labels.pdf',
+        name: job.file.name.replace(/\.pdf$/i, '') + '_processed_sorted.pdf',
         url,
         pages: pages.length,
-        skus,
-        badge,
-        label
+        skus: sortedSKUKeys,
+        badge: job.platform === 'meesho' ? 'badge-m' : 'badge-f',
+        label: job.platform.toUpperCase()
       });
-      onLog(`  ✓ ${job.file.name} → ${pages.length} pages, ${skus.length} SKUs`, 'ok');
+
+      done++;
+      onProgress(Math.round((done / total) * 100));
     } catch (e: any) {
-      onLog(`  ✗ ${job.file.name}: ${e.message}`, 'err');
+      onLog(`Error processing ${job.file.name}: ${e.message}`, 'err');
     }
-    done++;
-    onProgress(Math.round((done / total) * 100));
   }
 
   return outputs;

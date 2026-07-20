@@ -2,20 +2,22 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { runProcessor, ProcessingJob, ProcessingResult } from '@/lib/pdfProcessor';
+import AuthButton from './AuthButton';
 
 export default function Dashboard() {
-  const [meeshoFiles, setMeeshoFiles] = useState<File[]>([]);
-  const [flipkartFiles, setFlipkartFiles] = useState<File[]>([]);
+  const [files, setFiles] = useState<File[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [logs, setLogs] = useState<{msg: string, type: string}[]>([]);
+  const [logs, setLogs] = useState<{ msg: string; type: 'info' | 'ok' | 'err' }[]>([]);
   const [results, setResults] = useState<ProcessingResult[]>([]);
 
-  // Presets state
-  const [mCrop, setMCrop] = useState({ x0: 0, y0: 0, w: 595, h: 361, scale: 2 });
-  const [fCrop, setFCrop] = useState({ x0: 165, y0: 22, w: 265, h: 360, scale: 2 });
-  const [mSku, setMSku] = useState('SKU[:\\s#-]*([A-Z0-9\\-_]+)');
-  const [fSku, setFSku] = useState('SKU\\s+ID[^a-z]*?([A-Z0-9][A-Z0-9\\-_]+)');
+  // Presets State
+  const [preset, setPreset] = useState<'meesho' | 'flipkart' | 'amazon' | 'halfa4' | 'custom'>('meesho');
+  const [cropX, setCropX] = useState(0);
+  const [cropY, setCropY] = useState(0);
+  const [cropW, setCropW] = useState(595);
+  const [cropH, setCropH] = useState(350);
+  const [scale, setScale] = useState(2);
 
   const logRef = useRef<HTMLDivElement>(null);
 
@@ -25,46 +27,53 @@ export default function Dashboard() {
     }
   }, [logs]);
 
-  const handleDrop = (e: React.DragEvent, platform: 'meesho' | 'flipkart') => {
-    e.preventDefault();
-    e.currentTarget.classList.remove('drag');
-    const dropped = Array.from(e.dataTransfer.files).filter(f => f.name.endsWith('.pdf'));
-    addFiles(platform, dropped);
+  const applyPreset = (p: 'meesho' | 'flipkart' | 'amazon' | 'halfa4' | 'custom') => {
+    setPreset(p);
+    if (p === 'meesho') { setCropX(0); setCropY(0); setCropW(595); setCropH(350); setScale(2); }
+    else if (p === 'flipkart') { setCropX(0); setCropY(0); setCropW(595); setCropH(350); setScale(2); }
+    else if (p === 'amazon') { setCropX(0); setCropY(0); setCropW(595); setCropH(300); setScale(2); }
+    else if (p === 'halfa4') { setCropX(0); setCropY(0); setCropW(595); setCropH(420); setScale(2); }
   };
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>, platform: 'meesho' | 'flipkart') => {
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    const dropped = Array.from(e.dataTransfer.files).filter(f => f.name.toLowerCase().endsWith('.pdf'));
+    addFiles(dropped);
+  };
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
-      addFiles(platform, Array.from(e.target.files));
+      addFiles(Array.from(e.target.files));
     }
     e.target.value = '';
   };
 
-  const addFiles = (platform: 'meesho' | 'flipkart', files: File[]) => {
-    const setter = platform === 'meesho' ? setMeeshoFiles : setFlipkartFiles;
-    setter(prev => {
-      const newFiles = [...prev];
-      files.forEach(f => {
-        if (!newFiles.find(x => x.name === f.name && x.size === f.size)) newFiles.push(f);
+  const addFiles = (newFiles: File[]) => {
+    setFiles(prev => {
+      const list = [...prev];
+      newFiles.forEach(f => {
+        if (!list.find(x => x.name === f.name && x.size === f.size)) list.push(f);
       });
-      return newFiles;
+      return list;
     });
   };
 
-  const removeFile = (platform: 'meesho' | 'flipkart', index: number) => {
-    const setter = platform === 'meesho' ? setMeeshoFiles : setFlipkartFiles;
-    setter(prev => prev.filter((_, i) => i !== index));
+  const removeFile = (index: number) => {
+    setFiles(prev => prev.filter((_, i) => i !== index));
   };
 
   const handleRun = async () => {
+    if (files.length === 0) return;
     setIsProcessing(true);
     setLogs([]);
     setResults([]);
     setProgress(0);
 
-    const jobs: ProcessingJob[] = [
-      ...meeshoFiles.map(f => ({ file: f, platform: 'meesho' as const, skuPattern: mSku, settings: mCrop })),
-      ...flipkartFiles.map(f => ({ file: f, platform: 'flipkart' as const, skuPattern: fSku, settings: fCrop }))
-    ];
+    const jobs: ProcessingJob[] = files.map(f => ({
+      file: f,
+      platform: preset,
+      settings: { x0: cropX, y0: cropY, w: cropW, h: cropH, scale }
+    }));
 
     const handleLog = (msg: string, type: 'info' | 'ok' | 'err') => {
       setLogs(prev => [...prev, { msg: `${new Date().toLocaleTimeString()} ${msg}`, type }]);
@@ -73,181 +82,228 @@ export default function Dashboard() {
     try {
       const outs = await runProcessor(jobs, setProgress, handleLog);
       setResults(outs);
-      
+
       // Call Analytics API
       await fetch('/api/analytics', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           filesProcessed: jobs.length,
-          pagesProcessed: outs.reduce((acc, out) => acc + out.pages, 0),
-          platforms: { meesho: meeshoFiles.length, flipkart: flipkartFiles.length }
+          pagesProcessed: outs.reduce((acc, out) => acc + out.pages, 0)
         })
-      }).catch(err => console.error("Analytics error", err));
-
+      }).catch(err => console.error('Analytics error', err));
     } catch (e: any) {
       handleLog(`Error: ${e.message}`, 'err');
     }
 
     setIsProcessing(false);
-    handleLog('Done — download your cropped, sorted PDFs below.', 'ok');
+    handleLog('✅ All files processed successfully. Download your PDFs below.', 'ok');
   };
 
   const handleClear = () => {
-    setMeeshoFiles([]);
-    setFlipkartFiles([]);
+    setFiles([]);
     setLogs([]);
     setResults([]);
     setProgress(0);
   };
 
-  const isReady = meeshoFiles.length > 0 || flipkartFiles.length > 0;
-
   return (
-    <div className="container">
-      <h2 className="main-title">Label Crop & Sort Tool</h2>
-      <p className="sub">Extracts the shipping label (top portion), removes the tax invoice, sorts by SKU, outputs one PDF per file.</p>
-      
-      <div className="info-box">
-        <strong>Crop method:</strong> Uses exact CropBox values measured from your reference PDFs.<br/>
-        • <strong>Meesho:</strong> Top 42.8% of page width full, label only (≈360 pt tall out of 842 pt A4).<br/>
-        • <strong>Flipkart:</strong> Centre column, top 42.8% (x: 165–430 pt, y top: 22–382 pt of 842 pt page).
+    <div style={{ maxWidth: '1100px', margin: '0 auto', padding: '24px 16px', color: '#f8fafc' }}>
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px', paddingBottom: '16px', borderBottom: '1px solid #334155' }}>
+        <div>
+          <h1 style={{ fontSize: '24px', fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+            ✂️ Label Cropper Pro
+          </h1>
+          <p style={{ fontSize: '13px', color: '#94a3b8', margin: 0 }}>
+            Automated Shipping Label Cropper &amp; SKU Sorting Engine
+          </p>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <AuthButton />
+        </div>
       </div>
 
-      <div className="zones">
-        <div 
-          className="zone" 
-          onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add('drag'); }}
-          onDragLeave={e => e.currentTarget.classList.remove('drag')}
-          onDrop={e => handleDrop(e, 'meesho')}
-        >
-          <input type="file" accept=".pdf" multiple onChange={e => handleChange(e, 'meesho')} />
-          <div className="zone-icon">🛍️</div>
-          <div className="zone-title">Meesho labels <span className="badge badge-m">Flipkart-style</span></div>
-          <div className="zone-sub">Drop PDFs or click to browse</div>
-          {meeshoFiles.length > 0 && (
-            <div className="file-list">
-              {meeshoFiles.map((f, i) => (
-                <div className="file-chip" key={i}>
-                  <span title={f.name}>{f.name}</span>
-                  <button className="rm" onClick={(e) => { e.preventDefault(); e.stopPropagation(); removeFile('meesho', i); }}>✕</button>
+      {/* Visual Workflow Pipeline */}
+      <div style={{ background: '#1e293b', border: '1px solid #334155', borderRadius: '12px', padding: '16px 20px', marginBottom: '24px' }}>
+        <div style={{ fontSize: '11px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', marginBottom: '12px' }}>
+          ⚡ Automated Processing Pipeline
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', overflowX: 'auto' }}>
+          <div style={{ textAlign: 'center', minWidth: '80px' }}><div style={{ fontSize: '20px' }}>📤</div><div style={{ fontSize: '10px', color: '#94a3b8' }}>Upload PDFs</div></div>
+          <div style={{ color: '#475569' }}>➔</div>
+          <div style={{ textAlign: 'center', minWidth: '80px' }}><div style={{ fontSize: '20px' }}>✂️</div><div style={{ fontSize: '10px', color: '#94a3b8' }}>Crop Invoice</div></div>
+          <div style={{ color: '#475569' }}>➔</div>
+          <div style={{ textAlign: 'center', minWidth: '80px' }}><div style={{ fontSize: '20px' }}>🏷️</div><div style={{ fontSize: '10px', color: '#94a3b8' }}>Read SKU</div></div>
+          <div style={{ color: '#475569' }}>➔</div>
+          <div style={{ textAlign: 'center', minWidth: '80px' }}><div style={{ fontSize: '20px' }}>📦</div><div style={{ fontSize: '10px', color: '#94a3b8' }}>Group SKUs</div></div>
+          <div style={{ color: '#475569' }}>➔</div>
+          <div style={{ textAlign: 'center', minWidth: '80px' }}><div style={{ fontSize: '20px' }}>🔤</div><div style={{ fontSize: '10px', color: '#94a3b8' }}>Sort A–Z</div></div>
+          <div style={{ color: '#475569' }}>➔</div>
+          <div style={{ textAlign: 'center', minWidth: '80px' }}><div style={{ fontSize: '20px' }}>📥</div><div style={{ fontSize: '10px', color: '#94a3b8' }}>Download PDF</div></div>
+        </div>
+      </div>
+
+      {/* Main Grid */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '20px', marginBottom: '24px' }}>
+        {/* Dropzone Card */}
+        <div style={{ background: '#1e293b', border: '1px solid #334155', borderRadius: '12px', padding: '20px' }}>
+          <h2 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '12px' }}>🛍️ Upload Shipping Labels</h2>
+          <div
+            onDragOver={e => e.preventDefault()}
+            onDrop={handleDrop}
+            style={{
+              border: '2px dashed #334155',
+              borderRadius: '8px',
+              padding: '24px',
+              textAlign: 'center',
+              cursor: 'pointer',
+              background: '#0f172a',
+              position: 'relative'
+            }}
+          >
+            <input
+              type="file"
+              accept=".pdf"
+              multiple
+              onChange={handleChange}
+              style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer', width: '100%', height: '100%' }}
+            />
+            <div style={{ fontSize: '32px' }}>📁</div>
+            <div style={{ fontSize: '14px', fontWeight: 700, marginTop: '8px' }}>Drop PDF shipping labels here</div>
+            <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '4px' }}>or click to browse from computer</div>
+          </div>
+
+          {files.length > 0 && (
+            <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '140px', overflowY: 'auto' }}>
+              {files.map((f, i) => (
+                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#0f172a', padding: '6px 12px', borderRadius: '6px', fontSize: '12px' }}>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '80%' }}>📄 {f.name}</span>
+                  <button onClick={() => removeFile(i)} style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer' }}>✕</button>
                 </div>
               ))}
             </div>
           )}
         </div>
 
-        <div 
-          className="zone" 
-          onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add('drag'); }}
-          onDragLeave={e => e.currentTarget.classList.remove('drag')}
-          onDrop={e => handleDrop(e, 'flipkart')}
-        >
-          <input type="file" accept=".pdf" multiple onChange={e => handleChange(e, 'flipkart')} />
-          <div className="zone-icon">🟡</div>
-          <div className="zone-title">Flipkart / Shopsy <span className="badge badge-f">E-Kart format</span></div>
-          <div className="zone-sub">Drop PDFs or click to browse</div>
-          {flipkartFiles.length > 0 && (
-            <div className="file-list">
-              {flipkartFiles.map((f, i) => (
-                <div className="file-chip" key={i}>
-                  <span title={f.name}>{f.name}</span>
-                  <button className="rm" onClick={(e) => { e.preventDefault(); e.stopPropagation(); removeFile('flipkart', i); }}>✕</button>
-                </div>
-              ))}
+        {/* Crop Settings Card */}
+        <div style={{ background: '#1e293b', border: '1px solid #334155', borderRadius: '12px', padding: '20px' }}>
+          <h2 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '12px' }}>✂️ Crop &amp; Quality Settings</h2>
+          
+          <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', flexWrap: 'wrap' }}>
+            {(['meesho', 'flipkart', 'amazon', 'halfa4', 'custom'] as const).map(p => (
+              <button
+                key={p}
+                onClick={() => applyPreset(p)}
+                style={{
+                  padding: '6px 12px',
+                  fontSize: '12px',
+                  fontWeight: 600,
+                  borderRadius: '6px',
+                  border: '1px solid #334155',
+                  background: preset === p ? '#6366f1' : '#0f172a',
+                  color: preset === p ? '#fff' : '#94a3b8',
+                  cursor: 'pointer'
+                }}
+              >
+                {p.toUpperCase()}
+              </button>
+            ))}
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+            <div>
+              <label style={{ fontSize: '11px', color: '#94a3b8' }}>X Offset (pt)</label>
+              <input type="number" value={cropX} onChange={e => setCropX(parseFloat(e.target.value) || 0)} style={{ width: '100%', padding: '8px', background: '#0f172a', border: '1px solid #334155', borderRadius: '6px', color: '#fff' }} />
             </div>
-          )}
+            <div>
+              <label style={{ fontSize: '11px', color: '#94a3b8' }}>Y Offset (pt)</label>
+              <input type="number" value={cropY} onChange={e => setCropY(parseFloat(e.target.value) || 0)} style={{ width: '100%', padding: '8px', background: '#0f172a', border: '1px solid #334155', borderRadius: '6px', color: '#fff' }} />
+            </div>
+            <div>
+              <label style={{ fontSize: '11px', color: '#94a3b8' }}>Width (pt)</label>
+              <input type="number" value={cropW} onChange={e => setCropW(parseFloat(e.target.value) || 595)} style={{ width: '100%', padding: '8px', background: '#0f172a', border: '1px solid #334155', borderRadius: '6px', color: '#fff' }} />
+            </div>
+            <div>
+              <label style={{ fontSize: '11px', color: '#94a3b8' }}>Height (pt)</label>
+              <input type="number" value={cropH} onChange={e => setCropH(parseFloat(e.target.value) || 350)} style={{ width: '100%', padding: '8px', background: '#0f172a', border: '1px solid #334155', borderRadius: '6px', color: '#fff' }} />
+            </div>
+          </div>
         </div>
       </div>
 
-      <div className="presets">
-        <div className="preset-card">
-          <div className="preset-header">
-            <span className="preset-icon">🛍️</span>
-            <span className="preset-label">Meesho preset</span>
-            <span className="badge badge-m">TOP of page</span>
-          </div>
-          <div className="crop-vis">
-            <div className="crop-label">✂ Shipping label — TOP ~43%</div>
-            <div className="crop-invoice">🧾 Tax invoice (removed)</div>
-          </div>
-          <div className="field-row"><label>Crop x0 (pt)</label><input type="number" value={mCrop.x0} onChange={e => setMCrop({...mCrop, x0: +e.target.value})} /><span className="unit">pt</span></div>
-          <div className="field-row"><label>Crop y0 (pt)</label><input type="number" value={mCrop.y0} onChange={e => setMCrop({...mCrop, y0: +e.target.value})} /><span className="unit">pt</span></div>
-          <div className="field-row"><label>Crop width (pt)</label><input type="number" value={mCrop.w} onChange={e => setMCrop({...mCrop, w: +e.target.value})} /><span className="unit">pt</span></div>
-          <div className="field-row"><label>Crop height (pt)</label><input type="number" value={mCrop.h} onChange={e => setMCrop({...mCrop, h: +e.target.value})} /><span className="unit">pt</span></div>
-        </div>
-
-        <div className="preset-card">
-          <div className="preset-header">
-            <span className="preset-icon">🟡</span>
-            <span className="preset-label">Flipkart preset</span>
-            <span className="badge badge-f">TOP centre</span>
-          </div>
-          <div className="crop-vis">
-            <div className="crop-label crop-label-f">✂ Shipping label — TOP centre</div>
-            <div className="crop-invoice">🧾 Tax invoice (removed)</div>
-          </div>
-          <div className="field-row"><label>Crop x0 (pt)</label><input type="number" value={fCrop.x0} onChange={e => setFCrop({...fCrop, x0: +e.target.value})} /><span className="unit">pt</span></div>
-          <div className="field-row"><label>Crop y0 (pt)</label><input type="number" value={fCrop.y0} onChange={e => setFCrop({...fCrop, y0: +e.target.value})} /><span className="unit">pt</span></div>
-          <div className="field-row"><label>Crop width (pt)</label><input type="number" value={fCrop.w} onChange={e => setFCrop({...fCrop, w: +e.target.value})} /><span className="unit">pt</span></div>
-          <div className="field-row"><label>Crop height (pt)</label><input type="number" value={fCrop.h} onChange={e => setFCrop({...fCrop, h: +e.target.value})} /><span className="unit">pt</span></div>
-        </div>
-      </div>
-
-      <div className="section">
-        <h3>SKU detection patterns</h3>
-        <div className="row">
-          <label>Meesho SKU regex</label>
-          <input type="text" value={mSku} onChange={e => setMSku(e.target.value)} />
-        </div>
-        <div className="row">
-          <label>Flipkart SKU regex</label>
-          <input type="text" value={fSku} onChange={e => setFSku(e.target.value)} />
-        </div>
-        <p className="tip">Pages without a detected SKU are placed at the end of each file.</p>
-      </div>
-
-      <div className="actions">
-        <button className="btn primary" disabled={!isReady || isProcessing} onClick={handleRun}>
-          {isProcessing ? 'Processing...' : 'Process labels'}
+      {/* Action Toolbar */}
+      <div style={{ display: 'flex', gap: '12px', marginBottom: '24px' }}>
+        <button
+          onClick={handleRun}
+          disabled={files.length === 0 || isProcessing}
+          style={{
+            padding: '12px 24px',
+            borderRadius: '8px',
+            background: 'linear-gradient(135deg, #6366f1, #4f46e5)',
+            color: '#fff',
+            fontWeight: 700,
+            border: 'none',
+            cursor: files.length === 0 || isProcessing ? 'not-allowed' : 'pointer',
+            opacity: files.length === 0 || isProcessing ? 0.5 : 1
+          }}
+        >
+          {isProcessing ? `Processing (${progress}%)...` : '⚙️ Process &amp; Sort Labels'}
         </button>
-        <button className="btn" disabled={isProcessing} onClick={handleClear}>Clear all</button>
+        <button
+          onClick={handleClear}
+          style={{
+            padding: '12px 24px',
+            borderRadius: '8px',
+            background: '#1e293b',
+            color: '#fff',
+            fontWeight: 600,
+            border: '1px solid #334155',
+            cursor: 'pointer'
+          }}
+        >
+          ✕ Clear Queue
+        </button>
       </div>
 
-      {(progress > 0 || isProcessing) && (
-        <div className="prog-wrap" style={{ display: 'block' }}>
-          <div className="prog-bar" style={{ width: `${progress}%` }}></div>
+      {/* Progress Bar */}
+      {isProcessing && (
+        <div style={{ background: '#1e293b', border: '1px solid #334155', borderRadius: '8px', padding: '12px', marginBottom: '24px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', fontWeight: 600, marginBottom: '6px' }}>
+            <span>Processing PDFs...</span>
+            <span>{progress}%</span>
+          </div>
+          <div style={{ background: '#0f172a', height: '8px', borderRadius: '4px', overflow: 'hidden' }}>
+            <div style={{ background: '#6366f1', height: '100%', width: `${progress}%`, transition: 'width 0.2s' }} />
+          </div>
         </div>
       )}
 
+      {/* Logs Console */}
       {logs.length > 0 && (
-        <div className="log" ref={logRef}>
+        <div ref={logRef} style={{ background: '#090d16', border: '1px solid #334155', borderRadius: '8px', padding: '12px', fontFamily: 'monospace', fontSize: '12px', maxHeight: '160px', overflowY: 'auto', marginBottom: '24px' }}>
           {logs.map((l, i) => (
-            <div key={i} className={`log-line log-${l.type}`}>{l.msg}</div>
+            <div key={i} style={{ color: l.type === 'ok' ? '#34d399' : l.type === 'err' ? '#f87171' : '#94a3b8' }}>
+              {l.msg}
+            </div>
           ))}
         </div>
       )}
 
+      {/* Results Section */}
       {results.length > 0 && (
-        <div className="results">
-          {results.map((res, i) => (
-            <div className="res-card" key={i}>
-              <div className="res-name">
-                <span className="name-text" title={res.name}>{res.name}</span>
-                <span className={`badge ${res.badge}`}>{res.label}</span>
-              </div>
-              <div className="res-meta">{res.pages} pages · {res.skus.length} unique SKUs</div>
-              {res.skus.length > 0 && (
-                <div style={{fontSize:'11px', color:'var(--text-muted)', marginBottom:'12px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>
-                  SKUs: {res.skus.slice(0,6).join(', ')}{res.skus.length > 6 ? ' …' : ''}
-                </div>
-              )}
-              <button className="dl-btn" onClick={() => {
-                const a = document.createElement('a');
-                a.href = res.url;
-                a.download = res.name;
-                a.click();
-              }}>⬇ Download PDF</button>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '16px' }}>
+          {results.map((r, i) => (
+            <div key={i} style={{ background: '#1e293b', border: '1px solid #334155', borderRadius: '8px', padding: '16px' }}>
+              <div style={{ fontSize: '14px', fontWeight: 700, marginBottom: '6px' }}>📄 {r.name}</div>
+              <div style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '12px' }}>{r.pages} Pages · {r.skus.length} SKU Groups</div>
+              <a
+                href={r.url}
+                download={r.name}
+                style={{ display: 'block', textAlign: 'center', padding: '10px', background: '#10b981', color: '#fff', borderRadius: '6px', fontWeight: 700, textDecoration: 'none' }}
+              >
+                ⬇ Download Sorted PDF
+              </a>
             </div>
           ))}
         </div>
