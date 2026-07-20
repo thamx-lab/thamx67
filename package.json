@@ -6,13 +6,17 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "server": "node server.js",
+    "test": "node test_suite.js",
     "lint": "eslint"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.3",
     "@supabase/supabase-js": "^2.110.7",
+    "express": "^4.19.2",
     "jspdf": "^4.2.1",
     "next": "16.2.10",
+    "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^6.1.200",
     "react": "19.2.4",
     "react-dom": "19.2.4"
